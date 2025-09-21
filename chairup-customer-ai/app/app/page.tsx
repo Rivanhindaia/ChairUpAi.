@@ -11,7 +11,14 @@ type Service = {
   name: string; minutes: number; price_cents: number; active: boolean; payment_link_url?: string | null
 }
 type WorkingHours = { id: string; shop_id: string; dow: number; open_min: number; close_min: number }
-type BookingRow = { id: string; starts_at: string; service: { minutes: number } }
+
+/** FIX: Supabase join may return the nested `service` as an array (if relationship not inferred).
+ *  Allow both shapes and normalize later. */
+type BookingRow = {
+  id: string
+  starts_at: string
+  service?: { minutes: number } | { minutes: number }[] | null
+}
 
 function haversineKm(a: {lat:number;lng:number}, b: {lat:number;lng:number}) {
   const R = 6371
@@ -44,7 +51,7 @@ export default function CustomerApp() {
   const [time, setTime] = useState('')
   const [notes, setNotes] = useState('')
 
-  // AI bits (keep your previous assistant if you like; trimmed here)
+  // AI bits (optional)
   const [aiText, setAiText] = useState('')
   const [aiReply, setAiReply] = useState<{summary?:string, notes?:string} | null>(null)
   const [loadingAI, setLoadingAI] = useState(false)
@@ -126,9 +133,14 @@ export default function CustomerApp() {
         .lt('starts_at', endISO)
         .order('starts_at', { ascending: true })
 
-      const existing: { start: number; end: number }[] = (bk as BookingRow[] || []).map((r) => {
+      // FIX: normalize `service` whether it arrives as object or array
+      const rows: BookingRow[] = (bk ?? []) as any[]
+      const existing: { start: number; end: number }[] = rows.map((r) => {
         const st = new Date(r.starts_at).getTime()
-        return { start: st, end: st + (r.service?.minutes || 0) * 60000 }
+        const minutes = Array.isArray(r.service)
+          ? (r.service[0]?.minutes ?? 0)
+          : (r.service?.minutes ?? 0)
+        return { start: st, end: st + minutes * 60000 }
       })
 
       // build candidate slots (15-min granularity)
@@ -227,8 +239,8 @@ export default function CustomerApp() {
       if (ins.error) return alert(rpc.error.message || ins.error.message)
     }
 
-    // ICS
-    const blob = new Blob([`BEGIN:VCALENDAR
+    // ICS download
+    const ics = `BEGIN:VCALENDAR
 VERSION:2.0
 PRODID:-//ChairUp//EN
 BEGIN:VEVENT
@@ -237,7 +249,8 @@ DTSTAMP:${start.toISOString().replace(/[-:]/g,'').replace(/\.\d+Z/,'Z')}
 DTSTART:${start.toISOString().replace(/[-:]/g,'').replace(/\.\d+Z/,'Z')}
 SUMMARY:${s.name}
 END:VEVENT
-END:VCALENDAR`], { type: 'text/calendar' })
+END:VCALENDAR`
+    const blob = new Blob([ics], { type: 'text/calendar' })
     const a = document.createElement('a')
     a.href = URL.createObjectURL(blob); a.download = 'booking.ics'; a.click()
 
@@ -320,7 +333,16 @@ END:VCALENDAR`], { type: 'text/calendar' })
             <div>
               <div className="text-sm font-medium mb-2">Date</div>
               <div className="grid grid-cols-7 gap-2">
-                {days.map((d, idx) => {
+                {useMemo(() => {
+                  const a: Date[] = []
+                  const base = new Date()
+                  for (let i = 0; i < 14; i++) {
+                    const d = new Date(base)
+                    d.setDate(base.getDate() + i)
+                    a.push(d)
+                  }
+                  return a
+                }, []).map((d, idx) => {
                   const isSel = d.toDateString() === selectedDate.toDateString()
                   const closed = isClosed(d)
                   return (
@@ -374,7 +396,7 @@ END:VCALENDAR`], { type: 'text/calendar' })
           </div>
           <div className="flex gap-2">
             <input className="rounded-xl border border-slate-300 bg-white px-3 py-2 w-full" value={aiText} onChange={(e)=>setAiText(e.target.value)} placeholder="Describe your cut…" />
-            <button onClick={askAI} className="btn" disabled={loadingAI || !barber}>{loadingAI?'Thinking…':'Suggest'}</button>
+            <button onClick={async()=>{ await askAI() }} className="btn" disabled={loadingAI || !barber}>{loadingAI?'Thinking…':'Suggest'}</button>
           </div>
           {aiReply?.summary && (
             <div className="mt-3 p-3 rounded-xl bg-slate-50 border text-sm">
