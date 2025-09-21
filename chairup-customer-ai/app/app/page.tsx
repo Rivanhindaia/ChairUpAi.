@@ -11,23 +11,16 @@ type Service = {
   name: string; minutes: number; price_cents: number; active: boolean; payment_link_url?: string | null
 }
 type WorkingHours = { id: string; shop_id: string; dow: number; open_min: number; close_min: number }
+type BookingRow = { id: string; starts_at: string; service_id: string }
 
-/** FIX: Supabase join may return the nested `service` as an array (if relationship not inferred).
- *  Allow both shapes and normalize later. */
-type BookingRow = {
-  id: string
-  starts_at: string
-  service?: { minutes: number } | { minutes: number }[] | null
-}
-
-function haversineKm(a: {lat:number;lng:number}, b: {lat:number;lng:number}) {
+function haversineKm(a: { lat: number; lng: number }, b: { lat: number; lng: number }) {
   const R = 6371
-  const dLat = (b.lat - a.lat) * Math.PI/180
-  const dLng = (b.lng - a.lng) * Math.PI/180
-  const la1 = a.lat * Math.PI/180
-  const la2 = b.lat * Math.PI/180
-  const sinDLat = Math.sin(dLat/2), sinDLng = Math.sin(dLng/2)
-  const h = sinDLat*sinDLat + Math.cos(la1)*Math.cos(la2)*sinDLng*sinDLng
+  const dLat = (b.lat - a.lat) * Math.PI / 180
+  const dLng = (b.lng - a.lng) * Math.PI / 180
+  const la1 = a.lat * Math.PI / 180
+  const la2 = b.lat * Math.PI / 180
+  const sinDLat = Math.sin(dLat / 2), sinDLng = Math.sin(dLng / 2)
+  const h = sinDLat * sinDLat + Math.cos(la1) * Math.cos(la2) * sinDLng * sinDLng
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)))
 }
 
@@ -42,7 +35,7 @@ export default function CustomerApp() {
   const [services, setServices] = useState<Service[]>([])
   const [hours, setHours] = useState<Record<string, WorkingHours[]>>({}) // key = shop_id
 
-  const [coords, setCoords] = useState<{lat:number; lng:number} | null>(null)
+  const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null)
 
   const [barber, setBarber] = useState('')    // barber.id
   const [service, setService] = useState('')  // service.id
@@ -51,15 +44,15 @@ export default function CustomerApp() {
   const [time, setTime] = useState('')
   const [notes, setNotes] = useState('')
 
-  // AI bits (optional)
+  // AI helper (optional)
   const [aiText, setAiText] = useState('')
-  const [aiReply, setAiReply] = useState<{summary?:string, notes?:string} | null>(null)
+  const [aiReply, setAiReply] = useState<{ summary?: string, notes?: string } | null>(null)
   const [loadingAI, setLoadingAI] = useState(false)
 
-  // Load data
+  // Load core data
   useEffect(() => {
-    ;(async () => {
-      const { data:{ user } } = await supabase.auth.getUser()
+    (async () => {
+      const { data: { user } } = await supabase.auth.getUser()
       setProfileId(user?.id || '')
 
       const sj = await supabase.from('shops').select('id,name,city,lat,lng')
@@ -72,7 +65,7 @@ export default function CustomerApp() {
       setBarbers(bs)
 
       if (bs.length) {
-        const ids = bs.map((b) => b.user_id)
+        const ids = bs.map(b => b.user_id)
         const pq = await supabase.from('profiles').select('id,full_name,email').in('id', ids)
         const rec: Record<string, ProfileLite> = {}
         ;(pq.data || []).forEach((p: any) => { rec[p.id] = p })
@@ -93,67 +86,61 @@ export default function CustomerApp() {
   useEffect(() => {
     (async () => {
       if (!barber) return
-      const b = barbers.find((x) => x.id === barber)
+      const b = barbers.find(x => x.id === barber)
       if (!b) return
       if (!hours[b.shop_id]) {
         const wh = await supabase.from('working_hours').select('*').eq('shop_id', b.shop_id).order('dow')
-        setHours((prev) => ({ ...prev, [b.shop_id]: (wh.data || []) as any }))
+        setHours(prev => ({ ...prev, [b.shop_id]: (wh.data || []) as any }))
       }
-      const sv = services.filter((s) => s.barber_id === barber)
+      const sv = services.filter(s => s.barber_id === barber)
       setService(sv[0]?.id || '')
       setTime('')
     })()
   }, [barber, services]) // eslint-disable-line
 
-  // Compute slots when service/barber/date changes
+  // Compute slots when service/barber/date changes — WITHOUT joins (uses service_id)
   useEffect(() => {
     (async () => {
-      setSlots([])
-      setTime('')
+      setSlots([]); setTime('')
       if (!barber || !service) return
-      const b = barbers.find((x) => x.id === barber)
-      const s = services.find((x) => x.id === service)
+      const b = barbers.find(x => x.id === barber)
+      const s = services.find(x => x.id === service)
       if (!b || !s) return
 
       const dow = selectedDate.getDay()
       const wh = hours[b.shop_id] || []
-      const row = wh.find((r) => r.dow === dow)
+      const row = wh.find(r => r.dow === dow)
       const openMin = row ? row.open_min : 9 * 60
       const closeMin = row ? row.close_min : 18 * 60
       const serviceMin = s.minutes
 
-      // get bookings for that day (with minutes from joined service)
-      const startISO = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate()).toISOString()
-      const endISO = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate() + 1).toISOString()
+      // Get bookings for that day with just service_id (no join ambiguity)
+      const dayStart = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate())
+      const dayEnd = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate() + 1)
       const { data: bk } = await supabase
         .from('bookings')
-        .select('id, starts_at, service:services(minutes)')
+        .select('id, starts_at, service_id')
         .eq('barber_id', b.id)
-        .gte('starts_at', startISO)
-        .lt('starts_at', endISO)
+        .gte('starts_at', dayStart.toISOString())
+        .lt('starts_at', dayEnd.toISOString())
         .order('starts_at', { ascending: true })
 
-      // FIX: normalize `service` whether it arrives as object or array
-      const rows: BookingRow[] = (bk ?? []) as any[]
-      const existing: { start: number; end: number }[] = rows.map((r) => {
+      const minutesByService = new Map(services.map(sv => [sv.id, sv.minutes]))
+      const existing: { start: number; end: number }[] = ((bk || []) as BookingRow[]).map(r => {
         const st = new Date(r.starts_at).getTime()
-        const minutes = Array.isArray(r.service)
-          ? (r.service[0]?.minutes ?? 0)
-          : (r.service?.minutes ?? 0)
-        return { start: st, end: st + minutes * 60000 }
+        const mins = minutesByService.get(r.service_id) || 0
+        return { start: st, end: st + mins * 60000 }
       })
 
-      // build candidate slots (15-min granularity)
-      const dayStart = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate()).getTime()
+      // candidates every 15 minutes
+      const startMs = dayStart.getTime()
       const now = Date.now()
       const out: string[] = []
       for (let m = openMin; m + serviceMin <= closeMin; m += 15) {
-        const st = dayStart + m * 60000
+        const st = startMs + m * 60000
         const en = st + serviceMin * 60000
-        // don't show past times (if today)
         if (selectedDate.toDateString() === new Date().toDateString() && st < now) continue
-        // conflict?
-        const clash = existing.some((ex) => !(en <= ex.start || st >= ex.end))
+        const clash = existing.some(ex => !(en <= ex.start || st >= ex.end))
         if (!clash) {
           const hh = String(Math.floor(m / 60)).padStart(2, '0')
           const mm = String(m % 60).padStart(2, '0')
@@ -175,7 +162,7 @@ export default function CustomerApp() {
     })
   }, [barbers, shops, coords])
 
-  // Mini calendar for next 14 days
+  // Mini calendar: next 14 days
   const days = useMemo(() => {
     const a: Date[] = []
     const base = new Date()
@@ -189,10 +176,10 @@ export default function CustomerApp() {
 
   function isClosed(d: Date): boolean {
     if (!barber) return false
-    const b = barbers.find((x) => x.id === barber)
+    const b = barbers.find(x => x.id === barber)
     if (!b) return false
     const wh = hours[b.shop_id] || []
-    const row = wh.find((r) => r.dow === d.getDay())
+    const row = wh.find(r => r.dow === d.getDay())
     return !row
   }
 
@@ -214,8 +201,8 @@ export default function CustomerApp() {
   }
 
   async function book() {
-    const s = services.find((x) => x.id === service)
-    const b = barbers.find((x) => x.id === barber)
+    const s = services.find(x => x.id === service)
+    const b = barbers.find(x => x.id === barber)
     if (!profileId || !s || !b || !time) return alert('Sign in and complete details')
 
     const [hh, mm] = time.split(':').map(Number)
@@ -258,8 +245,8 @@ END:VCALENDAR`
     alert('Booked!')
   }
 
-  const pickedService = services.find((x) => x.id === service)
-  const pickedBarber = barbers.find((x) => x.id === barber)
+  const pickedService = services.find(x => x.id === service)
+  const pickedBarber = barbers.find(x => x.id === barber)
   const pickedBarberProfile = pickedBarber ? profiles[pickedBarber.user_id] : undefined
   const barberLabel = pickedBarberProfile?.full_name || pickedBarberProfile?.email || (pickedBarber ? `Barber ${pickedBarber.id.slice(0, 6)}` : '—')
   const canBook = !!(profileId && barber && service && time)
@@ -274,9 +261,9 @@ END:VCALENDAR`
             {sortedBarbers.map((b) => {
               const p = profiles[b.user_id]
               const s = shops[b.shop_id]
-              const label = (p?.full_name || p?.email || `Barber ${b.id.slice(0,6)}`) +
+              const label = (p?.full_name || p?.email || `Barber ${b.id.slice(0, 6)}`) +
                 (coords && s?.lat != null && s?.lng != null
-                  ? ` · ${haversineKm(coords, {lat: s.lat!, lng: s.lng!}).toFixed(1)} km`
+                  ? ` · ${haversineKm(coords, { lat: s.lat!, lng: s.lng! }).toFixed(1)} km`
                   : '')
               return (
                 <button
@@ -315,7 +302,7 @@ END:VCALENDAR`
             <div>
               <div className="text-sm font-medium mb-2">Services</div>
               <div className="flex flex-wrap gap-2">
-                {services.filter((s) => s.barber_id === barber).map((s) => (
+                {services.filter(s => s.barber_id === barber).map(s => (
                   <button
                     key={s.id}
                     onClick={() => setService(s.id)}
@@ -324,7 +311,7 @@ END:VCALENDAR`
                     {s.name} · ${(s.price_cents / 100).toFixed(2)} · {s.minutes}m
                   </button>
                 ))}
-                {barber && services.filter((s) => s.barber_id === barber).length === 0 && (
+                {barber && services.filter(s => s.barber_id === barber).length === 0 && (
                   <div className="text-sm text-slate-500">This barber has no services yet.</div>
                 )}
               </div>
@@ -333,16 +320,7 @@ END:VCALENDAR`
             <div>
               <div className="text-sm font-medium mb-2">Date</div>
               <div className="grid grid-cols-7 gap-2">
-                {useMemo(() => {
-                  const a: Date[] = []
-                  const base = new Date()
-                  for (let i = 0; i < 14; i++) {
-                    const d = new Date(base)
-                    d.setDate(base.getDate() + i)
-                    a.push(d)
-                  }
-                  return a
-                }, []).map((d, idx) => {
+                {days.map((d, idx) => {
                   const isSel = d.toDateString() === selectedDate.toDateString()
                   const closed = isClosed(d)
                   return (
@@ -356,7 +334,7 @@ END:VCALENDAR`
                       <div className="font-semibold">
                         {d.toLocaleDateString(undefined, { weekday: 'short' })}
                       </div>
-                      <div>{d.getMonth()+1}/{d.getDate()}</div>
+                      <div>{d.getMonth() + 1}/{d.getDate()}</div>
                     </button>
                   )
                 })}
@@ -395,8 +373,8 @@ END:VCALENDAR`
             Describe what you want (e.g., “mid-skin fade, blend the sides, 1.5″ on top”).
           </div>
           <div className="flex gap-2">
-            <input className="rounded-xl border border-slate-300 bg-white px-3 py-2 w-full" value={aiText} onChange={(e)=>setAiText(e.target.value)} placeholder="Describe your cut…" />
-            <button onClick={async()=>{ await askAI() }} className="btn" disabled={loadingAI || !barber}>{loadingAI?'Thinking…':'Suggest'}</button>
+            <input className="rounded-xl border border-slate-300 bg-white px-3 py-2 w-full" value={aiText} onChange={(e) => setAiText(e.target.value)} placeholder="Describe your cut…" />
+            <button onClick={askAI} className="btn" disabled={loadingAI || !barber}>{loadingAI ? 'Thinking…' : 'Suggest'}</button>
           </div>
           {aiReply?.summary && (
             <div className="mt-3 p-3 rounded-xl bg-slate-50 border text-sm">
@@ -408,7 +386,7 @@ END:VCALENDAR`
 
         <div className="card">
           <div className="text-sm font-medium mb-2">Notes (optional)</div>
-          <textarea className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 min-h-[100px]" value={notes} onChange={(e)=>setNotes(e.target.value)} placeholder="Anything the barber should know?" />
+          <textarea className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 min-h-[100px]" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Anything the barber should know?" />
         </div>
       </div>
 
