@@ -7,11 +7,19 @@ type Shop = { id: string; name: string; city: string | null; lat: number | null;
 type Barber = { id: string; user_id: string; shop_id: string }
 type ProfileLite = { id: string; full_name: string | null; email: string | null }
 type Service = {
-  id: string; shop_id: string; barber_id: string | null;
-  name: string; minutes: number; price_cents: number; active: boolean; payment_link_url?: string | null
+  id: string
+  shop_id: string
+  barber_id: string | null
+  name: string
+  minutes: number
+  price_cents: number
+  active: boolean
+  payment_link_url?: string | null
 }
 type WorkingHours = { id: string; shop_id: string; dow: number; open_min: number; close_min: number }
-type BookingRow = { id: string; starts_at: string; service_id: string }
+
+/** Bookings read WITHOUT joins (compile-safe) */
+type BookingRow = { id: string; starts_at: string; service_id: string | null }
 
 function haversineKm(a: { lat: number; lng: number }, b: { lat: number; lng: number }) {
   const R = 6371
@@ -125,12 +133,16 @@ export default function CustomerApp() {
         .lt('starts_at', dayEnd.toISOString())
         .order('starts_at', { ascending: true })
 
-      const minutesByService = new Map(services.map(sv => [sv.id, sv.minutes]))
-      const existing: { start: number; end: number }[] = ((bk || []) as BookingRow[]).map(r => {
-        const st = new Date(r.starts_at).getTime()
-        const mins = minutesByService.get(r.service_id) || 0
-        return { start: st, end: st + mins * 60000 }
-      })
+      // Normalize rows and compute existing blocks
+      const minutesByService = new Map(services.map(svc => [svc.id, svc.minutes]))
+      const rows: BookingRow[] = Array.isArray(bk) ? (bk as unknown as BookingRow[]) : []
+      const existing: { start: number; end: number }[] = rows
+        .filter(r => !!r.service_id)
+        .map(r => {
+          const st = new Date(r.starts_at).getTime()
+          const mins = minutesByService.get(r.service_id as string) || 0
+          return { start: st, end: st + mins * 60000 }
+        })
 
       // candidates every 15 minutes
       const startMs = dayStart.getTime()
