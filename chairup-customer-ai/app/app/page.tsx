@@ -41,7 +41,7 @@ export default function CustomerApp() {
   const [barbers, setBarbers] = useState<Barber[]>([])
   const [profiles, setProfiles] = useState<Record<string, ProfileLite>>({})
   const [services, setServices] = useState<Service[]>([])
-  const [hours, setHours] = useState<Record<string, WorkingHours[]>>({}) // key = shop_id
+  const [hours, setHours] = useState<Record<string, WorkingHours[]>>({})
 
   const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null)
 
@@ -106,7 +106,7 @@ export default function CustomerApp() {
     })()
   }, [barber, services]) // eslint-disable-line
 
-  // Compute slots — NO joins; use service_id and look up minutes locally
+  // ---- COMPUTE SLOTS (no joins; use service_id + local minutes) ----
   useEffect(() => {
     (async () => {
       setSlots([]); setTime('')
@@ -124,20 +124,21 @@ export default function CustomerApp() {
 
       const dayStart = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate())
       const dayEnd   = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate() + 1)
+
+      // IMPORTANT: we only select service_id (NO nested service object)
       const { data: bk } = await supabase
         .from('bookings')
-        .select('id, starts_at, service_id')         // ✅ only service_id
+        .select('id, starts_at, service_id')
         .eq('barber_id', b.id)
         .gte('starts_at', dayStart.toISOString())
         .lt('starts_at', dayEnd.toISOString())
         .order('starts_at', { ascending: true })
 
-      const minutesByService = new Map(services.map(sv => [sv.id, sv.minutes]))
-
-      // ✅ normalize rows safely (no nested service objects anywhere)
+      // Normalize rows to a safe shape
       const rows: Array<{ id: string; starts_at: string; service_id: string | null }> =
         Array.isArray(bk) ? (bk as unknown as Array<{ id: string; starts_at: string; service_id: string | null }>) : []
 
+      const minutesByService = new Map(services.map(sv => [sv.id, sv.minutes]))
       const existing: { start: number; end: number }[] = rows
         .filter(r => !!r.service_id)
         .map(r => {
@@ -163,6 +164,7 @@ export default function CustomerApp() {
       setSlots(out)
     })()
   }, [barber, service, selectedDate, hours, barbers, services])
+  // ------------------------------------------------------------------
 
   // Sorted barbers (by distance if coords + shop lat/lng available)
   const sortedBarbers = useMemo(() => {
@@ -266,8 +268,8 @@ END:VCALENDAR`
 
   return (
     <div className="grid xl:grid-cols-3 gap-6">
-      {/* ... UI unchanged ... */}
-      {/* (Same UI as your current file; omitted here for brevity) */}
+      {/* --- keep your existing UI here (cards, chips, booking summary, etc.) --- */}
+      {/* Nothing in the UI should reference r.service or service:services(...) */}
     </div>
   )
 }
